@@ -1,0 +1,14 @@
+# Entorno virtual
+.venv/
+
+# Archivos temporales de Python
+__pycache__/
+*.pyc
+
+# Capturas de tráfico
+*.pcap
+*.pcapng
+trafico.csv
+
+# Configuración local
+.env
