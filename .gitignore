@@ -12,3 +12,4 @@ trafico.csv
 
 # Configuración local
 .env
+*.log
