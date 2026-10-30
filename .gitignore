@@ -10,6 +10,11 @@ __pycache__/
 *.pcapng
 trafico.csv
 
+# CSV generados por la app
+tmp/
+
 # Configuración local
 .env
 *.log
+# Datos de ejemplo (se generan con python tests/generar_ejemplo.py)
+tests/ejemplo_*.csv

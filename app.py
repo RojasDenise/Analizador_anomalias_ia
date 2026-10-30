@@ -1,3 +1,5 @@
+import os
+
 import streamlit as st
 import pandas as pd
 from analizador import AnalizadorDeRed
@@ -6,8 +8,9 @@ import matplotlib.pyplot as plt
 analizador_red = AnalizadorDeRed()
 
 # Lista para almacenar los datos capturados
-path_df="tmp\df_trafico.csv"
-colums_df = ["Source IP", "Destination IP", "Transport Protocol", "Date", "Application Protocol", "Hostname DNS", "HTTP_Protocol_text_plain", "HTTP_Protocol_Username", "HTTP_Protocol_Password"]
+os.makedirs("tmp", exist_ok=True)
+path_df = os.path.join("tmp", "df_trafico.csv")
+colums_df = ["Source IP", "Destination IP", "Transport Protocol", "Date", "Application Protocol", "Hostname DNS"]
 
 datos_capturados = pd.DataFrame(columns=colums_df)
 
@@ -58,13 +61,13 @@ def plot_dataframe(df, id_loc:str, dest_ip:str="Todas", con_protocolo_transporte
 @st.cache_data
 def plot_time_series(df):
     # Convertir la columna 'timestamp' a tipo datetime
-    df['timestamp'] = pd.to_datetime(df['Timestamp'], unit='ms')
+    df['timestamp'] = pd.to_datetime(df['Timestamp'], unit='s')
 
     # Crear una nueva columna 'seconds' que representa el tiempo en segundos
     df['seconds'] = (df['timestamp'] - df['timestamp'].min()).dt.total_seconds()
 
     # Agrupar por segundos y contar la cantidad de paquetes en cada segundo
-    counts_per_second = df.groupby('seconds').size()
+    counts_per_second = df.groupby(df['seconds'].astype(int)).size()
 
     # Crear el gráfico de serie temporal
     fig, ax = plt.subplots()
