@@ -77,3 +77,10 @@ Esa es la verdad de referencia con la que E evalúa a todos los métodos.
 ## 5. Datos de ejemplo
 
 `python tests/generar_ejemplo.py` genera `tests/ejemplo_paquetes.csv` (15 min con los cuatro escenarios) y `tests/ejemplo_intervalos.csv`. Sirve para programar sin capturas reales.
+
+## 6. Evaluación (`evaluacion.py`, módulo E)
+
+- Un método **detecta una degradación** cuando pone en una ventana una alerta con etiqueta `Degradación de rendimiento` o `Congestión o saturación`. `Pico de uso normal` y `Comportamiento inusual` no cuentan como detección.
+- Las reglas fijas se evalúan juntas: las alertas de C1 y C2 se concatenan como un solo método, `Reglas fijas`.
+- Cada modelo de B2 se evalúa por separado: B2 entrega un DataFrame de alertas por modelo (`Isolation Forest`, `LOF`, `One-Class SVM`).
+- `evaluar(tabla_etiquetada, {"método": alertas})` devuelve precisión, recall, F1, falsas alarmas cada 100 ventanas normales, eventos detectados y demora media, en total y por escenario.
