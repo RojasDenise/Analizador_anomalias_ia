@@ -18,3 +18,6 @@ tmp/
 *.log
 # Datos de ejemplo (se generan con python tests/generar_ejemplo.py)
 tests/ejemplo_*.csv
+
+# Resultados de los experimentos (se generan al correr la evaluación)
+resultados/
