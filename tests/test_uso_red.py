@@ -1,4 +1,4 @@
-"""Pruebas del módulo uso_red.py con paquetes armados a mano para verificar su correcta funcionalidad.
+"""Pruebas del módulo C2 (uso_red.py) con paquetes armados a mano.
 
 Uso:  python tests/test_uso_red.py     (o: pytest tests/test_uso_red.py)
 """
@@ -108,6 +108,46 @@ def test_mbps_referencia():
     assert abs(uso_red.mbps_referencia([t, t]) - t["c2_mbps"].mean()) < 1e-12
 
 
+def test_reglas_cruzan_con_c1():
+    _, t = _preparar()
+    t["c1_pct_retrans"] = [0.0, 0.0, 0.0, 8.0]
+    t["c1_paquetes_tcp"] = [10, 3, 0, 100]
+
+    def etiqueta(alertas, i):
+        return alertas.set_index("inicio_ventana").loc[t.index[i], "etiqueta"]
+
+    alertas = uso_red.reglas_c2(t, mbps_normal=0.002)
+    ventanas.validar_alertas(alertas)
+    assert etiqueta(alertas, 3) == "Congestión o saturación"  # volumen alto + retransmisiones
+    assert etiqueta(alertas, 0) == "Pico de uso normal"       # volumen alto sin pérdida
+    assert "(C1)" in alertas.set_index("inicio_ventana").loc[t.index[3], "detalle"]
+
+    # Sin cruzar, o con pocos paquetes TCP, todo queda como pico de uso
+    sin_cruce = uso_red.reglas_c2(t, mbps_normal=0.002, cruzar_con_c1=False)
+    assert (sin_cruce["etiqueta"] == "Pico de uso normal").all()
+    t["c1_paquetes_tcp"] = [10, 3, 0, 19]
+    pocos = uso_red.reglas_c2(t, mbps_normal=0.002)
+    assert (pocos["etiqueta"] == "Pico de uso normal").all()
+
+
+def test_resumen_por_escenario():
+    _, t = _preparar()
+    t["escenario_real"] = ["normal", "normal", "normal", "saturacion"]
+    r = uso_red.resumen_por_escenario(t)
+    assert list(r["escenario"]) == ["normal", "saturacion"]  # normal primero
+    normal = (t["c2_mbps"].iloc[0] + t["c2_mbps"].iloc[1] + t["c2_mbps"].iloc[2]) / 3
+    assert abs(r["mbps_medio"].iloc[0] - normal) < 1e-12
+    assert abs(r["veces_normal"].iloc[1] - t["c2_mbps"].iloc[3] / normal) < 1e-9
+    frases = uso_red.interpretar(r)
+    assert len(frases) == 1 and "Saturacion" in frases[0] and "pico" in frases[0]
+
+
+def test_interpretar_escenario_que_c2_no_ve():
+    resumen = pd.DataFrame({"escenario": ["normal", "red lenta"], "veces_normal": [1.0, 1.1]})
+    frases = uso_red.interpretar(resumen)
+    assert len(frases) == 1 and "no lo ve" in frases[0]
+
+
 def test_con_datos_de_ejemplo():
     """Si existe tests/ejemplo_paquetes.csv (python tests/generar_ejemplo.py), lo usa."""
     ruta = os.path.join(CARPETA, "ejemplo_paquetes.csv")
@@ -116,6 +156,8 @@ def test_con_datos_de_ejemplo():
         return
     paquetes = ventanas.cargar_paquetes(ruta)
     t = uso_red.calcular_metricas(paquetes, ventanas.tabla_ventanas(paquetes))
+    import rendimiento_tcp as c1
+    t = c1.calcular_metricas(paquetes, t)  # para que C2 pueda cruzar con la pérdida
     intervalos = ventanas.leer_intervalos(os.path.join(CARPETA, "ejemplo_intervalos.csv"))
     t = ventanas.etiquetar_ventanas(t, intervalos, captura="ejemplo_paquetes.csv")
     normal = t[t["escenario_real"] == "normal"]["c2_mbps"].mean()
@@ -125,6 +167,8 @@ def test_con_datos_de_ejemplo():
     ventanas.validar_alertas(alertas)
     marcadas = t.loc[alertas["inicio_ventana"], "escenario_real"].value_counts()
     print("  ventanas con alerta por escenario:", {k: int(v) for k, v in marcadas.items()})
+    etiquetas = alertas.assign(escenario=t.loc[alertas["inicio_ventana"], "escenario_real"].values)
+    print("  etiquetas por escenario:", etiquetas.groupby(["escenario", "etiqueta"]).size().to_dict())
 
 
 if __name__ == "__main__":
