@@ -206,6 +206,10 @@ def main(argv=None):
     s = args.segundos
     tn, te = tablas(normales, s), tablas(escenarios, s)
 
+    # Resumen de C2 por escenario (normales + escenarios), para la sección de C2 del front
+    import uso_red as c2
+    _guardar(c2.resumen_por_escenario(pd.concat(tn + te)), "C2_resumen.csv")
+
     if "E1" in args.solo or "E4" in args.solo:
         g, esc, alertas, unida = correr(tn, te, args.capacidad_mbps)
 
