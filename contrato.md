@@ -77,3 +77,20 @@ Esa es la verdad de referencia con la que E evalúa a todos los métodos.
 ## 5. Datos de ejemplo
 
 `python tests/generar_ejemplo.py` genera `tests/ejemplo_paquetes.csv` (15 min con los cuatro escenarios) y `tests/ejemplo_intervalos.csv`. Sirve para programar sin capturas reales.
+
+## 7. Latencia y pérdida (`rendimiento_tcp.py`, módulo C1)
+
+`calcular_metricas(df_paquetes, tabla)` agrega a la tabla de ventanas:
+
+| Columna | Contenido |
+| --- | --- |
+| `c1_paquetes_tcp` | Paquetes TCP en la ventana (denominador de los porcentajes). |
+| `c1_rtt_medio_ms`, `c1_rtt_max_ms` | RTT medio y máximo (`tcp.analysis.ack_rtt`) en ms. **NaN si la ventana no tiene muestras de RTT** (0 ms se leería como "latencia perfecta"). |
+| `c1_pct_retrans` | % de paquetes TCP que son retransmisiones. |
+| `c1_pct_dup_ack` | % de paquetes TCP que son ACK duplicados. |
+| `c1_ventanas_cero` | Paquetes que anuncian ventana de recepción en cero. |
+
+- Los porcentajes se calculan sobre los **paquetes TCP** de la ventana (no sobre todos). Sin TCP quedan en 0.
+- **B2:** las columnas de RTT pueden tener NaN; hay que contemplarlo antes de entrenar los modelos.
+- `umbral_rtt(tablas_normales)`: media + 3 desvíos del `c1_rtt_medio_ms` de las ventanas normales (regla 3-sigma, Chandola et al., 2009).
+- `reglas_c1(tabla, umbral_rtt_ms)`: alerta `Degradación de rendimiento` si `c1_pct_retrans` > 5 % (solo con al menos 20 paquetes TCP en la ventana) o si `c1_rtt_medio_ms` > umbral.
