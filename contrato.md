@@ -100,3 +100,14 @@ Esa es la verdad de referencia con la que E evalúa a todos los métodos.
 - **B2:** las columnas de RTT pueden tener NaN; hay que contemplarlo antes de entrenar los modelos.
 - `umbral_rtt(tablas_normales)`: media + 3 desvíos del `c1_rtt_medio_ms` de las ventanas normales (regla 3-sigma, Chandola et al., 2009).
 - `reglas_c1(tabla, umbral_rtt_ms)`: alerta `Degradación de rendimiento` si `c1_pct_retrans` > 5 % (solo con al menos 20 paquetes TCP en la ventana) o si `c1_rtt_medio_ms` > umbral.
+
+
+## 8. Modelos de IA (`detector_ia.py`, módulo B2)
+
+- Entrada: la tabla de ventanas ya procesada por C1 y C2. Usa `c1_rtt_medio_ms`, `c1_rtt_max_ms`, `c1_pct_retrans`, `c1_pct_dup_ack`, `c1_ventanas_cero`, `c2_mbps`, `c2_pps` y las variables `ctx_*`. Si falta alguna (por ejemplo, C2), entrena con las que haya.
+- `entrenar(tablas_normales)`: entrena Isolation Forest, LOF y One-Class SVM **solo con ventanas normales**. Los faltantes (RTT en ventanas sin TCP) se completan con la mediana normal. `guardar()` y `cargar()` lo guardan en `modelos/` (no se sube al repo).
+- `puntuar(modelo, tabla)` agrega `b2_<if|lof|ocsvm>_puntaje` (más alto = más raro), `b2_<if|lof|ocsvm>_anomala`, `b2_causa` y `b2_explicacion` (las 3 métricas con mayor z-score).
+- `generar_alertas(tabla_puntuada)` devuelve `{"Isolation Forest": alertas, "LOF": alertas, "One-Class SVM": alertas}`, con el formato del contrato. Se pasa directo a `evaluacion.evaluar` junto con las reglas fijas.
+- Causa probable (z-score ≥ 3 respecto del tráfico normal): rendimiento y volumen → `Congestión o saturación`; solo rendimiento → `Degradación de rendimiento`; solo volumen → `Pico de uso normal`; puertos, SYN sin respuesta o DNS por encima de todo lo demás → `Comportamiento inusual`.
+- Limitación para el informe: Isolation Forest no usa métricas que en el tráfico normal son constantes (por ejemplo, SYN sin respuesta = 0), así que puede no ver un escaneo. LOF y One-Class SVM sí lo detectan.
+
