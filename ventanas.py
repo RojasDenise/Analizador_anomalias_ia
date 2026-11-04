@@ -96,9 +96,12 @@ def _marcar_syn_sin_respuesta(df):
         df.loc[es_synack, "Destination IP"], df.loc[es_synack, "Source IP"],
         df.loc[es_synack, "Dst Port"], df.loc[es_synack, "Src Port"],
     ))
-    claves = list(zip(df["Source IP"], df["Destination IP"], df["Src Port"], df["Dst Port"]))
-    sin_respuesta = [clave not in respondidas for clave in claves]
-    return (es_syn & pd.Series(sin_respuesta, index=df.index)).astype(int)
+    resultado = pd.Series(0, index=df.index)
+    if es_syn.any():  # solo se revisan los SYN, no todos los paquetes de la captura
+        syn = df.loc[es_syn]
+        claves = zip(syn["Source IP"], syn["Destination IP"], syn["Src Port"], syn["Dst Port"])
+        resultado.loc[es_syn] = [int(clave not in respondidas) for clave in claves]
+    return resultado
 
 
 def _a_hora_local(segundos_epoch):
