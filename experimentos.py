@@ -53,14 +53,14 @@ def listar_capturas(carpeta):
 
 
 def cargar_paquetes(ruta):
-    """Lee un CSV de paquetes; si es una captura, la convierte una vez y guarda el CSV al lado."""
+    """Lee un CSV de paquetes; si es una captura, la convierte una vez con tshark y guarda el CSV al lado."""
     if ruta.endswith(".csv"):
         return v.cargar_paquetes(ruta)
     csv = os.path.splitext(ruta)[0] + ".csv"
     if not os.path.exists(csv):
-        from analizador import AnalizadorDeRed
-        print(f"  convirtiendo {os.path.basename(ruta)} con PyShark (puede tardar)...")
-        AnalizadorDeRed().cargar_archivo_pcap(pcap_path=ruta, path_df=csv)
+        import convertir_capturas
+        print(f"  convirtiendo {os.path.basename(ruta)} con tshark (puede tardar unos minutos)...", flush=True)
+        convertir_capturas.convertir(ruta, csv, verbose=True)
     return v.cargar_paquetes(csv)
 
 
