@@ -191,14 +191,18 @@ def matriz_etiquetas(tabla, alertas):
 def registrar_resultado(resultado, experimento, descripcion="", ruta=RUTA_RESULTADOS):
     """Agrega las filas de un resultado a la tabla común de resultados (CSV).
 
-    experimento: "E1", "E2", "E3" o "E4". descripcion: por ejemplo "ventana 10 s".
+    experimento: "E1" a "E5". descripcion: por ejemplo "ventana 10 s".
+    Cada experimento puede traer columnas propias (E2 agrega ventana_s, E3 capturas_normales):
+    el archivo se reescribe con la unión de columnas, así ninguna fila queda desalineada.
     """
     os.makedirs(os.path.dirname(ruta), exist_ok=True)
     df = resultado.copy()
     df.insert(0, "descripcion", descripcion)
     df.insert(0, "experimento", experimento)
     df.insert(0, "fecha", datetime.now().strftime("%Y-%m-%d %H:%M"))
-    df.to_csv(ruta, mode="a", header=not os.path.exists(ruta), index=False)
+    if os.path.exists(ruta):
+        df = pd.concat([pd.read_csv(ruta), df], ignore_index=True)
+    df.to_csv(ruta, index=False)
     return ruta
 
 
