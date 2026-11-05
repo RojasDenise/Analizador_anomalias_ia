@@ -15,6 +15,7 @@ import pandas as pd
 import streamlit as st
 
 import detector_ia as b2
+import experimentos as exp
 import rendimiento_tcp as c1
 import uso_red as c2
 import ventanas as v
@@ -22,8 +23,7 @@ from analizador import AnalizadorDeRed
 
 CARPETA = os.path.dirname(os.path.abspath(__file__))
 CARPETA_CAPTURAS = os.path.join(CARPETA, "capturas")
-EJEMPLO_PAQUETES = os.path.join(CARPETA, "tests", "ejemplo_paquetes.csv")
-EJEMPLO_TIEMPOS = os.path.join(CARPETA, "tests", "ejemplo_intervalos.csv")
+RUTA_TIEMPOS = os.path.join(CARPETA_CAPTURAS, "tiempos.csv")
 CARPETA_RESULTADOS = os.path.join(CARPETA, "resultados")
 
 # Un color por método en la pestaña de Evaluación
@@ -49,20 +49,43 @@ st.set_page_config(page_title="PySharkStream Analytica", page_icon="📡", layou
 # ----------------------------------------------------------------------
 # Datos
 # ----------------------------------------------------------------------
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner="Leyendo la captura (las de fibra tardan un poco)...", max_entries=12)
+def _leer_ruta(ruta, _marca):
+    """Lee un CSV de la carpeta. _marca (fecha de modificación) renueva la caché si el archivo cambia."""
+    return pd.read_csv(ruta, low_memory=False)
+
+
 def _leer_csv(origen):
-    """Lee un CSV de paquetes desde una ruta o un archivo subido."""
-    return pd.read_csv(origen)
+    """Lee un CSV de paquetes desde una ruta de la carpeta o un archivo subido."""
+    if isinstance(origen, str):
+        return _leer_ruta(origen, os.path.getmtime(origen))
+    return pd.read_csv(origen, low_memory=False)
 
 
-@st.cache_data(show_spinner="Generando datos de ejemplo...")
-def _datos_ejemplo():
-    if not os.path.exists(EJEMPLO_PAQUETES):
-        import sys
-        sys.path.insert(0, os.path.join(CARPETA, "tests"))
-        from generar_ejemplo import generar
-        generar()
-    return pd.read_csv(EJEMPLO_PAQUETES), v.leer_intervalos(EJEMPLO_TIEMPOS)
+def _base(ruta):
+    return os.path.splitext(os.path.basename(str(ruta)))[0]
+
+
+def _clave(origen):
+    """Identifica una captura sin tener que comparar millones de filas."""
+    if isinstance(origen, str):
+        return f"{origen}|{os.path.getmtime(origen)}"
+    return f"subida|{origen.name}|{origen.size}|{getattr(origen, 'file_id', '')}"
+
+
+def _escenarios_de_la_carpeta():
+    """CSV de capturas con evento: todo menos las normales, Starlink y la planilla de tiempos."""
+    rutas = sorted(glob.glob(os.path.join(CARPETA_CAPTURAS, "*.csv")))
+    return [r for r in rutas if not _base(r).startswith((exp.PREFIJO_NORMAL, exp.PREFIJO_STARLINK))
+            and _base(r) != "tiempos"]
+
+
+def _tiempos_de(base, tiempos):
+    """Filas de la planilla que corresponden a una captura (por nombre, sin extensión)."""
+    if tiempos is None:
+        return None
+    filas = tiempos[tiempos["captura"].map(_base) == base]
+    return filas if len(filas) else None
 
 
 def _tabla(paquetes, segundos, tiempos=None, recortar_bordes=True):
@@ -76,9 +99,14 @@ def _tabla(paquetes, segundos, tiempos=None, recortar_bordes=True):
     return c2.calcular_metricas(paquetes, tabla, segundos)
 
 
-@st.cache_data(show_spinner="Calculando métricas, reglas y modelos de IA...")
-def analizar(paquetes, normales, tiempos, segundos, contaminacion, capacidad_mbps):
-    """Todo el análisis de la pantalla 1. Devuelve un diccionario con tablas y alertas."""
+@st.cache_data(show_spinner="Calculando métricas, reglas y modelos de IA...", max_entries=8)
+def analizar(clave, _paquetes, _normales, tiempos, segundos, contaminacion, capacidad_mbps):
+    """Todo el análisis de la pantalla 1. Devuelve un diccionario con tablas y alertas.
+
+    clave identifica la captura y sus normales: así la caché no tiene que comparar los
+    DataFrames enteros (las capturas de fibra tienen millones de filas).
+    """
+    paquetes, normales = _paquetes, _normales
     tabla = _tabla(paquetes, segundos, tiempos)
     tablas_normales = [_tabla(n, segundos) for n in normales]
 
@@ -106,36 +134,54 @@ def analizar(paquetes, normales, tiempos, segundos, contaminacion, capacidad_mbp
 # ----------------------------------------------------------------------
 def sidebar():
     st.sidebar.header("Configuración")
-    fuente = st.sidebar.radio("Datos", ["Datos de ejemplo", "Subir captura"], horizontal=True)
+    fuente = st.sidebar.radio("Datos", ["Capturas de la carpeta", "Subir captura"], horizontal=True)
 
-    tiempos = None
-    if fuente == "Datos de ejemplo":
-        paquetes, tiempos = _datos_ejemplo()
-        # Referencia normal: los primeros 3 minutos, antes del primer evento
-        corte = paquetes["Timestamp"].min() + 180
-        normales = [paquetes[paquetes["Timestamp"] < corte]]
-        nombre = "ejemplo_paquetes.csv"
-        st.sidebar.caption("15 minutos simulados con red lenta, saturación, uso intenso y escaneo. "
-                           "Los primeros 3 minutos se usan como tráfico normal.")
-    else:
-        archivo = st.sidebar.file_uploader("Captura a analizar (.csv)", type=["csv"],
-                                           help="Convertí el .pcapng con: python convertir_capturas.py capturas")
-        if archivo is None:
+    planilla = v.leer_intervalos(RUTA_TIEMPOS) if os.path.exists(RUTA_TIEMPOS) else None
+    if fuente == "Capturas de la carpeta":
+        escenarios = _escenarios_de_la_carpeta()
+        if not escenarios:
+            st.sidebar.warning("No hay capturas en la carpeta capturas. Convertí los .pcapng con:\n\n"
+                               "`python convertir_capturas.py capturas`")
             return None
-        paquetes, nombre = _leer_csv(archivo), archivo.name
-
-        disponibles = sorted(glob.glob(os.path.join(CARPETA_CAPTURAS, "normal_*.csv")))
-        elegidas = st.sidebar.multiselect("Capturas normales de referencia", disponibles,
-                                          default=disponibles, format_func=os.path.basename)
-        subidas = st.sidebar.file_uploader("…o subí capturas normales (.csv)", type=["csv"],
-                                           accept_multiple_files=True)
-        normales = [_leer_csv(r) for r in elegidas] + [_leer_csv(f) for f in subidas or []]
-
-        archivo_tiempos = st.sidebar.file_uploader("Planilla de tiempos (opcional)", type=["csv"])
+        origen = st.sidebar.selectbox("Captura a analizar", escenarios, format_func=_base)
+        nombre = _base(origen)
+        tiempos = _tiempos_de(nombre, planilla)
+        if planilla is None:
+            st.sidebar.caption("No está capturas/tiempos.csv: no se marca cuándo pasó el evento.")
+        elif tiempos is None:
+            st.sidebar.caption(f"{nombre} no figura en tiempos.csv.")
+    else:
+        origen = st.sidebar.file_uploader("Captura a analizar (.csv)", type=["csv"],
+                                          help="Convertí el .pcapng con: python convertir_capturas.py capturas")
+        if origen is None:
+            return None
+        nombre = _base(origen.name)
+        archivo_tiempos = st.sidebar.file_uploader("Planilla de tiempos (opcional)", type=["csv"],
+                                                   help="Si no subís una, se usa capturas/tiempos.csv.")
         if archivo_tiempos is not None:
-            tiempos = v.leer_intervalos(archivo_tiempos)
-            base = os.path.splitext(nombre)[0]
-            tiempos = tiempos[tiempos["captura"].map(lambda c: os.path.splitext(str(c))[0]) == base]
+            planilla = v.leer_intervalos(archivo_tiempos)
+        tiempos = _tiempos_de(nombre, planilla)
+
+    # Normales: se proponen las del mismo entorno que la captura (ver experimentos.py)
+    entorno = exp.entorno_escenario(nombre, planilla.assign(captura=planilla["captura"].map(_base))) \
+        if planilla is not None else exp.ENTORNO_POR_DEFECTO
+    disponibles = sorted(glob.glob(os.path.join(CARPETA_CAPTURAS, exp.PREFIJO_NORMAL + "*.csv")))
+    del_entorno = [r for r in disponibles if exp.entorno_normal(_base(r)) == entorno]
+    elegidas = st.sidebar.multiselect(
+        "Capturas normales de referencia", disponibles, default=del_entorno or disponibles,
+        format_func=_base, key=f"normales_{nombre}",
+        help="Se proponen las del mismo entorno que la captura (columna entorno de tiempos.csv).")
+    st.sidebar.caption(f"Entorno de la captura: **{entorno}**")
+    subidas = st.sidebar.file_uploader("…o subí capturas normales (.csv)", type=["csv"],
+                                       accept_multiple_files=True)
+    if not elegidas and not subidas:
+        st.sidebar.warning("Elegí al menos una captura normal para entrenar la IA y fijar los umbrales.")
+        return None
+
+    with st.spinner("Leyendo capturas..."):
+        paquetes = _leer_csv(origen)
+        normales = [_leer_csv(r) for r in elegidas] + [_leer_csv(f) for f in subidas or []]
+    clave = "|".join([_clave(origen)] + [_clave(r) for r in elegidas] + [_clave(f) for f in subidas or []])
 
     st.sidebar.divider()
     segundos = st.sidebar.select_slider("Tamaño de ventana (s)", [5, 10, 15], value=5)
@@ -144,7 +190,7 @@ def sidebar():
     capacidad = st.sidebar.number_input("Capacidad del enlace (Mbps, 0 = sin dato)", min_value=0.0, value=0.0)
 
     return {
-        "paquetes": paquetes, "nombre": nombre, "normales": normales, "tiempos": tiempos,
+        "clave": clave, "paquetes": paquetes, "nombre": nombre, "normales": normales, "tiempos": tiempos,
         "segundos": segundos, "contaminacion": contaminacion, "capacidad": capacidad or None,
     }
 
@@ -229,7 +275,7 @@ def pantalla_rendimiento(cfg):
         return
 
     try:
-        r = analizar(cfg["paquetes"], cfg["normales"], cfg["tiempos"], cfg["segundos"],
+        r = analizar(cfg["clave"], cfg["paquetes"], cfg["normales"], cfg["tiempos"], cfg["segundos"],
                      cfg["contaminacion"], cfg["capacidad"])
     except ValueError as error:
         st.error(f"No se pudo analizar: {error}")
@@ -410,8 +456,52 @@ def pantalla_evaluacion():
         m = mat[mat["metodo"] == metodo].drop(columns="metodo").set_index("escenario_real")
         st.dataframe(m.dropna(axis=1, how="all").fillna(0).astype(int), use_container_width=True)
 
+    _otros_experimentos()
+
     st.download_button("Exportar comparación (CSV)", glob_.to_csv(index=False).encode("utf-8"),
                        file_name="E1_global.csv", mime="text/csv")
+
+
+def _grafico_experimento(datos, columna_x, titulo_x, columna_y="f1", titulo_y="F1", dominio_y=(0.4, 1)):
+    """Una medida de cada método según una variable del experimento (líneas con puntos)."""
+    escala = alt.Scale(domain=list(COLORES_METODO), range=list(COLORES_METODO.values()))
+    base = alt.Chart(datos).encode(
+        x=alt.X(f"{columna_x}:O", title=titulo_x, axis=alt.Axis(labelAngle=0)),
+        y=alt.Y(f"{columna_y}:Q", title=titulo_y, scale=alt.Scale(domain=list(dominio_y))),
+        color=alt.Color("metodo:N", scale=escala, title="Método", legend=alt.Legend(orient="bottom")),
+        tooltip=["metodo", alt.Tooltip(f"{columna_x}:O", title=titulo_x), alt.Tooltip("f1:Q", title="F1", format=".2f"),
+                 alt.Tooltip("falsas_alarmas_c100:Q", title="Falsas alarmas c/100", format=".1f")],
+    )
+    return (base.mark_line(strokeWidth=2.5) + base.mark_point(size=70, filled=True)).properties(height=260)
+
+
+def _otros_experimentos():
+    """E2 (tamaño de ventana) y E3 (cantidad de capturas normales), si ya se corrieron."""
+    e2, e3 = _resultado("E2_ventanas.csv"), _resultado("E3_normales.csv")
+    if e2 is None and e3 is None:
+        st.caption("E2 y E3 todavía no se corrieron: `python experimentos.py --solo E2 E3`")
+        return
+    st.subheader("Otros experimentos")
+    izquierda, derecha = st.columns(2)
+    if e2 is not None:
+        with izquierda:
+            st.markdown("**E2 · Tamaño de ventana: falsas alarmas**")
+            tope = max(15, float(e2["falsas_alarmas_c100"].max()) + 1)
+            st.altair_chart(_grafico_experimento(e2, "ventana_s", "Ventana (s)", "falsas_alarmas_c100",
+                                                 "Falsas alarmas", (0, tope)), use_container_width=True)
+            mejor = e2.loc[e2["f1"].idxmax()]
+            st.caption(f"Mejor F1: {mejor['metodo']} con ventanas de {int(mejor['ventana_s'])} s "
+                       f"({mejor['f1']:.2f}). Con ventanas más grandes suben las falsas alarmas de todos los "
+                       "métodos, porque una ventana mezcla tráfico normal con el evento.")
+    if e3 is not None:
+        with derecha:
+            st.markdown("**E3 · Capturas normales para entrenar: F1**")
+            st.altair_chart(_grafico_experimento(e3, "capturas_normales", "Capturas normales por entorno"),
+                            use_container_width=True)
+            lof = e3[e3["metodo"] == "LOF"].set_index("capturas_normales")["f1"]
+            if len(lof) > 1:
+                st.caption(f"LOF: F1 {lof.iloc[0]:.2f} con {lof.index[0]} captura y {lof.iloc[-1]:.2f} con "
+                           f"{lof.index[-1]}: con unos 10 minutos de tráfico normal ya alcanza.")
 
 
 # ----------------------------------------------------------------------
@@ -426,7 +516,7 @@ pestanas = st.tabs(["Rendimiento y Anomalías", "Gráficos", "Evaluación"])
 if cfg is None:
     for p in pestanas[:2]:
         with p:
-            st.info("Subí una captura en la barra lateral o elegí «Datos de ejemplo».")
+            st.info("Elegí una captura de la carpeta o subí un CSV en la barra lateral.")
 else:
     with pestanas[0]:
         pantalla_rendimiento(cfg)
