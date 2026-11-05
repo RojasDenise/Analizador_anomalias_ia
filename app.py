@@ -24,6 +24,15 @@ CARPETA = os.path.dirname(os.path.abspath(__file__))
 CARPETA_CAPTURAS = os.path.join(CARPETA, "capturas")
 EJEMPLO_PAQUETES = os.path.join(CARPETA, "tests", "ejemplo_paquetes.csv")
 EJEMPLO_TIEMPOS = os.path.join(CARPETA, "tests", "ejemplo_intervalos.csv")
+CARPETA_RESULTADOS = os.path.join(CARPETA, "resultados")
+
+# Un color por método en la pestaña de Evaluación
+COLORES_METODO = {
+    "Reglas fijas": "#8A94A6",
+    "Isolation Forest": "#4FC3F7",
+    "LOF": "#76B7B2",
+    "One-Class SVM": "#B07AA1",
+}
 
 # Un color por causa, igual en toda la app
 COLORES_CAUSA = {
@@ -163,7 +172,7 @@ def _seccion_c2(r):
     st.subheader("Uso de la red (C2)")
     datos = t[["c2_mbps"]].reset_index()
     linea = alt.Chart(datos).mark_area(opacity=0.5, line=True).encode(
-        x=alt.X("inicio_ventana:T", title="Hora"), y=alt.Y("c2_mbps:Q", title="Mbps"),
+        x=alt.X("inicio_ventana:T", title="Hora", axis=alt.Axis(format="%H:%M")), y=alt.Y("c2_mbps:Q", title="Mbps"),
         tooltip=[alt.Tooltip("inicio_ventana:T", format="%H:%M:%S"), alt.Tooltip("c2_mbps:Q", format=".2f")])
     regla = alt.Chart(pd.DataFrame({"y": [3 * r["mbps_normal"]]})).mark_rule(
         color="red", strokeDash=[6, 4]).encode(y="y:Q")
@@ -179,7 +188,7 @@ def _seccion_ia(r, clave):
     datos.columns = ["inicio_ventana", "puntaje", "anomala", "causa", "explicacion"]
 
     linea = alt.Chart(datos).mark_line(color="#8B95A7").encode(
-        x=alt.X("inicio_ventana:T", title="Hora"), y=alt.Y("puntaje:Q", title="Puntaje de anomalía"))
+        x=alt.X("inicio_ventana:T", title="Hora", axis=alt.Axis(format="%H:%M")), y=alt.Y("puntaje:Q", title="Puntaje de anomalía"))
     puntos = alt.Chart(datos[datos["anomala"]]).mark_circle(size=80).encode(
         x="inicio_ventana:T", y="puntaje:Q",
         color=alt.Color("causa:N", scale=ESCALA_CAUSA, title="Causa probable"),
@@ -263,7 +272,7 @@ def pantalla_graficos(cfg):
     serie = tabla[["c2_mbps", "c2_pps"]].reset_index().rename(columns={"c2_mbps": "Mbps", "c2_pps": "Paquetes/s"})
     largo = serie.melt("inicio_ventana", var_name="medida", value_name="valor")
     st.altair_chart(alt.Chart(largo).mark_line().encode(
-        x=alt.X("inicio_ventana:T", title="Hora"), y=alt.Y("valor:Q", title=None),
+        x=alt.X("inicio_ventana:T", title="Hora", axis=alt.Axis(format="%H:%M")), y=alt.Y("valor:Q", title=None),
         color=alt.Color("medida:N", title=None), row=alt.Row("medida:N", title=None),
         tooltip=[alt.Tooltip("inicio_ventana:T", format="%H:%M:%S"), "medida:N",
                  alt.Tooltip("valor:Q", format=".2f")],
@@ -304,16 +313,118 @@ def pantalla_graficos(cfg):
 
 
 # ----------------------------------------------------------------------
+# Pestaña Evaluación: lee los resultados de experimentos.py
+# ----------------------------------------------------------------------
+@st.cache_data
+def _leer_resultado(nombre, _marca):
+    """Lee resultados/<nombre>; _marca (fecha de modificación) invalida la caché al regenerarlo."""
+    return pd.read_csv(os.path.join(CARPETA_RESULTADOS, nombre))
+
+
+def _resultado(nombre):
+    ruta = os.path.join(CARPETA_RESULTADOS, nombre)
+    return _leer_resultado(nombre, os.path.getmtime(ruta)) if os.path.exists(ruta) else None
+
+
+def pantalla_evaluacion():
+    glob_ = _resultado("E1_global.csv")
+    if glob_ is None:
+        st.info("Todavía no hay resultados. Corré en la terminal, desde la carpeta del repo:\n\n"
+                "`python experimentos.py --solo E1 E4`\n\ny volvé a esta pestaña.")
+        return
+
+    fecha = pd.Timestamp(os.path.getmtime(os.path.join(CARPETA_RESULTADOS, "E1_global.csv")), unit="s")
+    fecha = fecha.tz_localize("UTC").tz_convert("America/Argentina/Buenos_Aires")
+    st.caption(f"Resultados de experimentos.py · generados el {fecha:%d/%m/%Y %H:%M} · "
+               "cada escenario se compara con las capturas normales de su entorno")
+
+    # Respuesta a la pregunta de investigación
+    hip = _resultado("E1_hipotesis.csv")
+    mejor = glob_.sort_values("f1", ascending=False).iloc[0]
+    base = glob_.set_index("metodo").loc["Reglas fijas"] if "Reglas fijas" in set(glob_["metodo"]) else None
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Mejor método (F1)", mejor["metodo"], f"F1 {mejor['f1']:.2f}", delta_color="off")
+    if base is not None:
+        k2.metric("F1 de las reglas fijas", f"{base['f1']:.2f}")
+    if hip is not None:
+        aceptan = hip.loc[hip["acepta_hipotesis"].astype(str) == "True", "metodo"].tolist()
+        k3.metric("Modelos que superan a las reglas", f"{len(aceptan)} de {len(hip)}")
+        k4.metric("Hipótesis", "Se acepta" if aceptan else "No se acepta",
+                  ", ".join(aceptan) if aceptan else None, delta_color="off")
+
+    st.subheader("Comparación de métodos (E1)")
+    cols = ["metodo", "precision", "recall", "f1", "falsas_alarmas_c100", "eventos_detectados", "demora_media_s"]
+    vista = glob_[[c for c in cols if c in glob_.columns]].rename(columns={
+        "metodo": "Método", "precision": "Precisión", "recall": "Recall", "f1": "F1",
+        "falsas_alarmas_c100": "Falsas alarmas c/100", "eventos_detectados": "Eventos detectados",
+        "demora_media_s": "Demora media (s)"})
+    for c in ["Precisión", "Recall", "F1", "Falsas alarmas c/100", "Demora media (s)"]:
+        if c in vista:
+            vista[c] = pd.to_numeric(vista[c], errors="coerce")
+    st.dataframe(vista.style.format({"Precisión": "{:.2f}", "Recall": "{:.2f}", "F1": "{:.2f}",
+                                     "Falsas alarmas c/100": "{:.1f}", "Demora media (s)": "{:.1f}"}, na_rep="—")
+                 .highlight_max(subset=["F1"], color="#1F3A4D"),
+                 use_container_width=True, hide_index=True)
+
+    largo = glob_.melt(id_vars="metodo", value_vars=["precision", "recall", "f1"],
+                       var_name="medida", value_name="valor")
+    largo["medida"] = largo["medida"].map({"precision": "Precisión", "recall": "Recall", "f1": "F1"})
+    escala = alt.Scale(domain=list(COLORES_METODO), range=list(COLORES_METODO.values()))
+    barras = alt.Chart(largo).mark_bar().encode(
+        x=alt.X("metodo:N", title=None, sort=list(COLORES_METODO), axis=alt.Axis(labels=False, ticks=False)),
+        y=alt.Y("valor:Q", title=None, scale=alt.Scale(domain=[0, 1])),
+        color=alt.Color("metodo:N", scale=escala, title="Método", legend=alt.Legend(orient="bottom")),
+        column=alt.Column("medida:N", title=None, sort=["Precisión", "Recall", "F1"]),
+        tooltip=["metodo", "medida", alt.Tooltip("valor:Q", format=".2f")],
+    ).properties(width=180, height=220)
+    st.altair_chart(barras)
+
+    if hip is not None:
+        with st.expander("Regla de decisión de la hipótesis"):
+            st.caption("Un modelo supera a las reglas si mejora el recall o el F1 y no sube las falsas alarmas "
+                       "más de 2 cada 100 ventanas normales.")
+            st.dataframe(hip.rename(columns={
+                "metodo": "Método", "delta_recall": "Δ recall", "delta_f1": "Δ F1",
+                "delta_falsas_alarmas_c100": "Δ falsas alarmas c/100", "acepta_hipotesis": "Supera a las reglas"})
+                .style.format({"Δ recall": "{:+.2f}", "Δ F1": "{:+.2f}", "Δ falsas alarmas c/100": "{:+.1f}"}),
+                use_container_width=True, hide_index=True)
+
+    esc = _resultado("E1_por_escenario.csv")
+    if esc is not None:
+        st.subheader("Por escenario")
+        st.caption("En red lenta y saturación importa cuánto detecta (recall); en los demás, cuánto se equivoca "
+                   "(falsas alarmas cada 100 ventanas).")
+        esc = esc.copy()
+        esc["valor"] = np.where(esc["degradado"].astype(str) == "True",
+                                esc["recall"].map(lambda x: "—" if pd.isna(x) else f"recall {x:.2f}"),
+                                esc["falsas_alarmas_c100"].map(lambda x: "—" if pd.isna(x) else f"{x:.1f} falsas c/100"))
+        st.dataframe(esc.pivot(index="escenario", columns="metodo", values="valor")
+                     .reindex(columns=[m for m in COLORES_METODO if m in set(esc["metodo"])]),
+                     use_container_width=True)
+
+    mat = _resultado("E4_matrices.csv")
+    if mat is not None:
+        st.subheader("Caso de confusión (E4): qué etiqueta puso cada método")
+        metodo = st.radio("Método", [m for m in COLORES_METODO if m in set(mat["metodo"])], horizontal=True,
+                          key="e4_metodo")
+        m = mat[mat["metodo"] == metodo].drop(columns="metodo").set_index("escenario_real")
+        st.dataframe(m.dropna(axis=1, how="all").fillna(0).astype(int), use_container_width=True)
+
+    st.download_button("Exportar comparación (CSV)", glob_.to_csv(index=False).encode("utf-8"),
+                       file_name="E1_global.csv", mime="text/csv")
+
+
+# ----------------------------------------------------------------------
 # Página
 # ----------------------------------------------------------------------
 st.title("PySharkStream Analytica")
 st.caption("Rendimiento de red con IA · Redes de Datos · FaCENA-UNNE")
 
 cfg = sidebar()
-pestanas = st.tabs(["Rendimiento y Anomalías", "Gráficos"])
+pestanas = st.tabs(["Rendimiento y Anomalías", "Gráficos", "Evaluación"])
 
 if cfg is None:
-    for p in pestanas:
+    for p in pestanas[:2]:
         with p:
             st.info("Subí una captura en la barra lateral o elegí «Datos de ejemplo».")
 else:
@@ -321,3 +432,5 @@ else:
         pantalla_rendimiento(cfg)
     with pestanas[1]:
         pantalla_graficos(cfg)
+with pestanas[2]:
+    pantalla_evaluacion()

@@ -8,8 +8,14 @@ Carpeta de capturas esperada (los nombres importan):
         normal_1.pcapng, normal_2.pcapng, normal_3.pcapng      tráfico normal (entrenamiento)
         red_lenta_1.pcapng, saturacion_1.pcapng, ...           escenarios (evaluación)
         starlink_normal_1.pcapng, ...                          opcional: E5
-        tiempos.csv                                            planilla: captura, inicio, fin, escenario
+        tiempos.csv                                            planilla: captura, inicio, fin, escenario[, entorno]
 También acepta los CSV ya generados por analizador.py con el mismo nombre (normal_1.csv, ...).
+
+Entornos de captura: cada escenario se compara solo con las normales de su mismo entorno
+(misma red, misma máquina, mismo generador de tráfico). El entorno se lee así:
+    normales:   normal_<entorno>_<n>  (normal_vm_milo_1 -> "vm_milo");  normal_<n> -> "fibra"
+    escenarios: columna opcional "entorno" de tiempos.csv; si falta o está vacía -> "fibra"
+Los umbrales y los modelos se ajustan por entorno y después se evalúa todo junto.
 
 Uso:
     python experimentos.py                              # todos los experimentos
@@ -21,6 +27,7 @@ Resultados en resultados/: un CSV por experimento y la tabla común resultados.c
 import argparse
 import glob
 import os
+import re
 
 import pandas as pd
 
@@ -31,6 +38,7 @@ CARPETA_CAPTURAS = "capturas"
 CARPETA_RESULTADOS = "resultados"
 PREFIJO_NORMAL = "normal_"
 PREFIJO_STARLINK = "starlink_normal_"
+ENTORNO_POR_DEFECTO = "fibra"
 
 
 # ----------------------------------------------------------------------
@@ -53,15 +61,38 @@ def listar_capturas(carpeta):
 
 
 def cargar_paquetes(ruta):
-    """Lee un CSV de paquetes; si es una captura, la convierte una vez con tshark y guarda el CSV al lado."""
+    """Lee un CSV de paquetes; si es una captura, la convierte una vez y guarda el CSV al lado."""
     if ruta.endswith(".csv"):
         return v.cargar_paquetes(ruta)
     csv = os.path.splitext(ruta)[0] + ".csv"
     if not os.path.exists(csv):
-        import convertir_capturas
-        print(f"  convirtiendo {os.path.basename(ruta)} con tshark (puede tardar unos minutos)...", flush=True)
-        convertir_capturas.convertir(ruta, csv, verbose=True)
+        from analizador import AnalizadorDeRed
+        print(f"  convirtiendo {os.path.basename(ruta)} con PyShark (puede tardar)...")
+        AnalizadorDeRed().cargar_archivo_pcap(pcap_path=ruta, path_df=csv)
     return v.cargar_paquetes(csv)
+
+
+def entorno_normal(nombre):
+    """Entorno de una captura normal según su nombre: normal_vm_milo_2 -> "vm_milo", normal_3 -> "fibra"."""
+    resto = re.sub(r"_?\d+$", "", nombre[len(PREFIJO_NORMAL):])
+    return resto or ENTORNO_POR_DEFECTO
+
+
+def entorno_escenario(nombre, tiempos):
+    """Entorno de una captura de escenario, de la columna "entorno" de tiempos.csv (o "fibra")."""
+    if "entorno" not in tiempos.columns:
+        return ENTORNO_POR_DEFECTO
+    valores = tiempos.loc[tiempos["captura"] == nombre, "entorno"].dropna().str.strip()
+    valores = valores[valores != ""]
+    return valores.iloc[0] if len(valores) else ENTORNO_POR_DEFECTO
+
+
+def agrupar(nombres, entorno_de):
+    """{entorno: [nombres]} manteniendo el orden."""
+    grupos = {}
+    for n in nombres:
+        grupos.setdefault(entorno_de(n), []).append(n)
+    return grupos
 
 
 def leer_tiempos(ruta):
@@ -124,14 +155,15 @@ def aplicar_metodos(ajuste, tabla):
     return {"Reglas fijas": reglas, **b2.generar_alertas(b2.puntuar(ajuste["b2"], tabla))}
 
 
-def _aplicar_por_captura(ajuste, tablas):
+def _aplicar_por_captura(ajuste, tablas, desde=0):
     """Aplica los métodos captura por captura y une todo en una sola tabla para evaluar.
 
     Cada captura se corre en el tiempo (400 días por captura) para que dos capturas grabadas
     una atrás de otra no compartan ventanas. Las demoras y conteos no cambian.
+    desde: cuántas capturas ya se corrieron antes (para seguir la numeración entre entornos).
     """
     unidas, alertas = [], {}
-    for i, tabla in enumerate(tablas):
+    for i, tabla in enumerate(tablas, start=desde):
         corrimiento = pd.Timedelta(days=400 * i)
         t = tabla.copy()
         t.index = t.index + corrimiento
@@ -147,10 +179,30 @@ def _aplicar_por_captura(ajuste, tablas):
 def correr(tablas_normales, tablas_escenario, capacidad_mbps=None):
     """Ajusta con las normales, aplica sobre los escenarios y evalúa.
 
+    Acepta listas (un solo entorno) o diccionarios {entorno: [tablas]}: en ese caso los umbrales
+    y los modelos se ajustan con las normales de cada entorno y se aplican solo a sus escenarios.
     Devuelve (resultado global, resultado por escenario, alertas, tabla unida).
     """
-    ajuste = ajustar_metodos(tablas_normales, capacidad_mbps)
-    unida, alertas = _aplicar_por_captura(ajuste, tablas_escenario)
+    if not isinstance(tablas_normales, dict):
+        tablas_normales = {ENTORNO_POR_DEFECTO: tablas_normales}
+        tablas_escenario = {ENTORNO_POR_DEFECTO: tablas_escenario}
+
+    unidas, alertas, n = [], {}, 0
+    for entorno, escenarios in tablas_escenario.items():
+        if not escenarios:
+            continue
+        if not tablas_normales.get(entorno):
+            raise ValueError(f"No hay capturas normales del entorno '{entorno}'.")
+        ajuste = ajustar_metodos(tablas_normales[entorno], capacidad_mbps)
+        unida, a = _aplicar_por_captura(ajuste, escenarios, desde=n)
+        n += len(escenarios)
+        unidas.append(unida)
+        for metodo, lista in a.items():
+            alertas.setdefault(metodo, []).append(lista)
+    if not unidas:
+        raise ValueError("No hay capturas de escenario para evaluar.")
+    alertas = {m: pd.concat(lista, ignore_index=True) for m, lista in alertas.items()}
+    unida = pd.concat(unidas)
     glob_, esc = ev.evaluar(unida, alertas)
     return glob_, esc, alertas, unida
 
@@ -190,9 +242,16 @@ def main(argv=None):
     normales = sorted(n for n in rutas if n.startswith(PREFIJO_NORMAL))
     starlink = sorted(n for n in rutas if n.startswith(PREFIJO_STARLINK))
     escenarios = sorted(n for n in rutas if n not in normales and n not in starlink)
-    print(f"Normales: {normales}\nEscenarios: {escenarios}\nStarlink: {starlink or 'ninguna (E5 se omite)'}")
+    grupo_n = agrupar(normales, entorno_normal)
+    grupo_e = agrupar(escenarios, lambda n: entorno_escenario(n, tiempos))
+    print(f"Starlink: {starlink or 'ninguna (E5 se omite)'}")
+    for entorno in sorted(set(grupo_n) | set(grupo_e)):
+        print(f"Entorno {entorno}: normales {grupo_n.get(entorno, [])} · escenarios {grupo_e.get(entorno, [])}")
     if not normales or not escenarios:
         raise SystemExit("Faltan capturas normales o de escenario en la carpeta.")
+    sin_normales = [e for e in grupo_e if e not in grupo_n]
+    if sin_normales:
+        raise SystemExit(f"Estos entornos tienen escenarios pero ninguna captura normal: {sin_normales}")
     sin_tiempos = [n for n in escenarios if n not in set(tiempos["captura"])]
     if sin_tiempos:
         print(f"Aviso: estas capturas no tienen tiempos anotados y quedan como todo normal: {sin_tiempos}")
@@ -203,12 +262,15 @@ def main(argv=None):
     def tablas(nombres, segundos):
         return [procesar(n, paquetes[n], tiempos, segundos) for n in nombres]
 
+    def por_entorno(grupos, segundos):
+        return {e: tablas(nombres, segundos) for e, nombres in grupos.items()}
+
     s = args.segundos
-    tn, te = tablas(normales, s), tablas(escenarios, s)
+    tn, te = por_entorno(grupo_n, s), por_entorno(grupo_e, s)
 
     # Resumen de C2 por escenario (normales + escenarios), para la sección de C2 del front
     import uso_red as c2
-    _guardar(c2.resumen_por_escenario(pd.concat(tn + te)), "C2_resumen.csv")
+    _guardar(c2.resumen_por_escenario(pd.concat(sum(tn.values(), []) + sum(te.values(), []))), "C2_resumen.csv")
 
     if "E1" in args.solo or "E4" in args.solo:
         g, esc, alertas, unida = correr(tn, te, args.capacidad_mbps)
@@ -219,7 +281,7 @@ def main(argv=None):
             h = ev.hipotesis(g)
             _mostrar("E1 · Hipótesis (contra reglas fijas)", h)
             _guardar(g, "E1_global.csv"), _guardar(esc, "E1_por_escenario.csv"), _guardar(h, "E1_hipotesis.csv")
-            ev.registrar_resultado(g, "E1", f"ventana {s} s, {len(normales)} normales, {len(escenarios)} escenarios")
+            ev.registrar_resultado(g, "E1", f"ventana {s} s, {len(normales)} normales, {len(escenarios)} escenarios, {len(grupo_e)} entornos")
 
         if "E4" in args.solo:
             print("\n== E4 · Caso de confusión: etiqueta asignada por escenario ==")
@@ -234,7 +296,7 @@ def main(argv=None):
         filas = []
         for seg in args.ventanas_e2:
             try:
-                g2, _, _, _ = correr(tablas(normales, seg), tablas(escenarios, seg), args.capacidad_mbps)
+                g2, _, _, _ = correr(por_entorno(grupo_n, seg), por_entorno(grupo_e, seg), args.capacidad_mbps)
             except ValueError as error:
                 print(f"Aviso E2, ventana {seg} s omitida: {error}")
                 continue
@@ -246,9 +308,10 @@ def main(argv=None):
 
     if "E3" in args.solo:
         filas = []
-        for k in range(1, len(normales) + 1):
+        # Cada entorno usa sus primeras k capturas normales (o todas, si tiene menos de k)
+        for k in range(1, max(len(x) for x in tn.values()) + 1):
             try:
-                g3, _, _, _ = correr(tn[:k], te, args.capacidad_mbps)
+                g3, _, _, _ = correr({e: x[:k] for e, x in tn.items()}, te, args.capacidad_mbps)
             except ValueError as error:
                 print(f"Aviso E3, {k} captura(s) normal(es) omitida: {error}")
                 continue
@@ -256,11 +319,13 @@ def main(argv=None):
         e3 = pd.concat(filas, ignore_index=True) if filas else pd.DataFrame(columns=["capturas_normales"] + COLS)
         _mostrar("E3 · Cantidad de capturas normales", e3, ["capturas_normales"] + COLS)
         _guardar(e3, "E3_normales.csv")
-        ev.registrar_resultado(e3, "E3", f"1 a {len(normales)} capturas normales")
+        ev.registrar_resultado(e3, "E3", f"1 a {k} capturas normales por entorno")
 
-    if "E5" in args.solo and starlink:
+    if "E5" in args.solo and starlink and ENTORNO_POR_DEFECTO not in tn:
+        print("Aviso: E5 se omite, necesita capturas normales de fibra (normal_1, normal_2, ...).")
+    elif "E5" in args.solo and starlink:
         # Métodos ajustados con fibra, aplicados a tráfico normal de Starlink: toda alerta es falsa alarma
-        ajuste = ajustar_metodos(tn, args.capacidad_mbps)
+        ajuste = ajustar_metodos(tn[ENTORNO_POR_DEFECTO], args.capacidad_mbps)
         ts, alertas5 = _aplicar_por_captura(ajuste, tablas(starlink, s))
         g5, _ = ev.evaluar(ts, alertas5)
         _mostrar("E5 · Falsas alarmas en Starlink (ajustado con fibra)", g5,

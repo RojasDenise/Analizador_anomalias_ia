@@ -1,9 +1,11 @@
+# Tema oscuro: mismos colores que el diseño de Figma y la presentación
 [theme]
 base = "dark"
-primaryColor = "#4FC3F7"
-backgroundColor = "#0B0F17"
-secondaryBackgroundColor = "#121926"
+primaryColor = "#4FC3F7"            # celeste (acento)
+backgroundColor = "#0B0F17"         # azul marino oscuro (fondo)
+secondaryBackgroundColor = "#121926" # superficie (sidebar y tarjetas)
 textColor = "#E6EAF2"
 
+# Las capturas de fibra pesan más de 200 MB (límite por defecto)
 [server]
 maxUploadSize = 1024
